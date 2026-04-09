@@ -1,0 +1,421 @@
+// objeto com os assentos selecionados
+var carrinho = {}; 
+
+// carregando o mapa para rendenizar
+var chart = new seatsio.SeatingChart({
+  divId: 'chart',
+  workspaceKey: keyEspacoPublico, // chave do espaço de trabalho público
+  event: eventKey, // chave do evento criado
+  session: 'continue',
+  language: "pt",
+  selectedObjectsInputName: 'selectedSeatsField',
+  pricing: categorys,
+  maxSelectedObjects: maxSelected,
+  showLegend: true,
+  availableCategories: gru_id,
+
+  priceFormatter: function(price) {
+    return 'R$ ' + price.toLocaleString('pt-br', { minimumFractionDigits: 2 });
+  },
+
+  onObjectSelected: function(object) {
+    var uuid = object.uuid;
+    var categoria = object.category;
+    var ticketType = object.selectedTicketType;
+    var price = 0;
+    var taxa = 0;
+    var ite_cod = 0;
+    var mes_id = 0;
+
+    // Descobre o preço para o ticketType escolhido
+    object.pricing.ticketTypes.forEach(function(p) {
+      if (p.ticketType === ticketType) {
+        price = p.price;
+      }
+    });
+
+    // Descobre o ite_cod
+    ite_cod_arr.forEach(function(ite) {
+      if(ite.lot_grupo_estoque == object.category.key && ite.nome == ticketType && ite.price == price) {
+        ite_cod = ite.ite_cod;
+      }
+    });
+
+    //verifica se é mesa
+    if(object.objectType == "Table") {
+      mes_id = object.id; 
+    }
+
+    // --- Lógica para áreas de selecao de area geral ---
+    if(object.objectType === "GeneralAdmissionArea") {
+
+      // Quantidade atual selecionada desse ticketType
+      var quantidade = object.selectionPerTicketType[ticketType];
+    
+      // Cria chave única para cada ingresso selecionado
+      var chave = `${object.uuid}-${ticketType}-${quantidade}`;
+
+      carrinho[chave] = {
+        uuid: object.uuid,
+        label: object.category.label,
+        color: object.category.color,
+        key: object.category.key,
+        labelAssento: `${object.label} (${ticketType})`,
+        ticketType,
+        price,
+        ite_cod: Number(ite_cod),
+        tipo_assento: 'N',
+        assento_visual: `${object.labels.parent ?? ''}${object.labels.own}`,
+      };
+
+      // atualiza car e evita continuar
+      atualizarCarrinho();
+      return; 
+    }
+
+    // Se for assento parcial, pegar o assento selecionado específico
+    if(object.numSelected !== undefined && Array.isArray(object.seats)) {
+      var seat = object.seats[object.numSelected - 1];
+      uuid = seat.uuid;
+      assento_parcial = 'S';
+    }
+
+    carrinho[uuid] = {
+      uuid: uuid,
+      label: categoria.label,
+      color: categoria.color,
+      key: categoria.key,
+      labelAssento: object.label,
+      ticketType,
+      price: price,
+      ite_cod: Number(ite_cod),
+      mes_id: mes_id,
+      tipo_assento: 'S',
+      assento_visual: `${object.labels.parent ?? ''}${object.labels.own}`,
+    };
+
+    atualizarCarrinho();
+  },
+
+  onObjectDeselected: function(object) {
+    var mesaReorgani = [];
+    var uuids = [];
+    var chaveParaDeletar = null;
+
+    // --- Lógica para áreas de selecao de area geral ---
+    if(object.objectType === "GeneralAdmissionArea") {
+      //const ticketType = object.selectedTicketType;
+
+      // Coletar todos os ingressos dessa área no carrinho
+      var disponivelNoCarrinho = Object.values(carrinho).filter(function(c) { c.uuid === object.uuid });
+
+      // Limpar do carrinho antes de reorganizar
+      Object.keys(carrinho).forEach(function(k) {
+        if(k.startsWith(object.uuid)) {
+          delete carrinho[k];
+        }
+      });
+
+      // Reorganizar conforme seleção atual
+      generalAdmissionParcial(disponivelNoCarrinho, object.selectionPerTicketType, object.uuid);
+      return;
+    }
+
+    // Se é assento parcial (mesa)
+    if(object.numSelected !== undefined && Array.isArray(object.seats)) {
+      // Como não tem o uuid do assento específico desmarcado (?), tenta achar a chave que tem uuid entre os seats
+      object.seats.forEach(function(seat) {
+        for(var id in carrinho) {
+          if(carrinho[id].uuid === seat.uuid) {
+            
+            mesaReorgani.push(carrinho[id]); 
+            uuids.push(seat.uuid);
+            chaveParaDeletar = id;
+            
+          }  
+        }
+      });
+    } else {
+      // Para assento simples / mesa inteira
+      for(var id in carrinho) {
+        if(carrinho[id].uuid === object.uuid) {
+          chaveParaDeletar = id;
+          break;
+        }
+      }
+    }
+
+    if(chaveParaDeletar) {
+      if(object.numSelected !== undefined && Array.isArray(object.seats)) {
+        mesaParcial(mesaReorgani, object.selectionPerTicketType, uuids);
+      }
+
+      delete carrinho[chaveParaDeletar];
+      atualizarCarrinho();
+    }
+  },
+
+  onSessionExpired: function() {
+    limpaListaMod(); 
+  },
+}).render(); 
+
+function mesaParcial(disponivelNoCarrinho, tiposDisponiveis, uuids) {
+  Object.keys(tiposDisponiveis).forEach(function(tipo) {
+    var count = 0;
+
+    disponivelNoCarrinho = disponivelNoCarrinho.filter(function(item) {
+      if(item.ticketType === tipo) {
+        count++;
+        return count <= tiposDisponiveis[tipo];
+      }
+      return true;
+    });
+  });
+
+  for(var i = 0; i < disponivelNoCarrinho.length; i++) {
+    carrinho[uuids[i]] = {
+      uuid: uuids[i],
+      label: disponivelNoCarrinho[i].label,
+      color: disponivelNoCarrinho[i].color,
+      key: disponivelNoCarrinho[i].key,
+      labelAssento: disponivelNoCarrinho[i].labelAssento,
+      ticketType: disponivelNoCarrinho[i].ticketType,
+      price: Number(disponivelNoCarrinho[i].price),
+      ite_cod: Number(disponivelNoCarrinho[i].ite_cod),
+      tipo_assento: 'S',
+      assento_visual: `${object.labels.parent ?? ''}${object.labels.own}`,
+    };
+  }
+
+  atualizarCarrinho();
+};
+
+function generalAdmissionParcial(disponivelNoCarrinho, tiposDisponiveis, uuidArea) {
+  // Filtrar os ingressos de acordo com a nova quantidade em tiposDisponiveis
+  Object.keys(tiposDisponiveis).forEach(function(tipo) {
+    var count = 0;
+
+    disponivelNoCarrinho = disponivelNoCarrinho.filter(function(item) {
+      if(item.ticketType === tipo) {
+        count++;
+        return count <= tiposDisponiveis[tipo];
+      }
+      return true;
+    });
+  });
+
+  // Reconstruir o carrinho para esta área
+  var index = 1;
+  disponivelNoCarrinho.forEach(function(item) {
+    var chave = `${uuidArea}-${item.ticketType}-${index}`;
+    carrinho[chave] = {
+      uuid: uuidArea,
+      label: item.label,
+      color: item.color,
+      key: item.key,
+      labelAssento: `${item.labelAssento}`,
+      ticketType: item.ticketType,
+      price: Number(item.price),
+      ite_cod: Number(item.ite_cod),
+      tipo_assento: 'N',
+      assento_visual: `${object.labels.parent ?? ''}${object.labels.own}`,
+    };
+
+    index++;
+  });
+
+  atualizarCarrinho();
+};
+
+function atualizarCarrinho() {
+  var container = document.getElementById("carrinho");
+  var divTotal = document.querySelector("#totalAssentosSelect");
+  container.innerHTML = "";
+  divTotal.innerHTML = `R$ 0,00`;
+
+  //console.log('Carrinho: ', carrinho);
+
+  var itens = Object.values(carrinho);
+
+  if(itens.length === 0) {
+    container.innerHTML = "<p>Nenhum assento selecionado.</p><hr/>";
+    // Garante que o modal seja limpo/hiddden quando carrinho vazio
+    limpaListaMod();
+    document.getElementById('final-resumo-pe').disabled = true;
+    botaoCompra(true);
+    return;
+  }
+
+  // Agrupar por setor
+  var setores = {};
+  var total = 0;
+
+  itens.forEach(function(item) {
+    var setorKey = item.label;
+
+    document.getElementById(`assento_parcial${item.ite_cod}`).value = item.tipo_assento;       
+
+    if(!setores[setorKey]) {
+      setores[setorKey] = {
+        color: item.color,
+        ticketTypes: {}
+      };
+    }
+
+    var keyTicket = item.ticketType + '-' + item.price;
+
+    var taxaValor = taxaArr.find(function(t) { 
+      return t.lot_grupo_estoque == item.key && t.ite_cod == item.ite_cod 
+    });
+
+    var taxa = taxaValor ? Number(taxaValor.taxa) : 0;
+
+    var formattedPrice = Number(item.price) + taxa;
+
+    if(!setores[setorKey].ticketTypes[keyTicket]) {
+      setores[setorKey].ticketTypes[keyTicket] = {
+        ticketType: item.ticketType,
+        formattedPrice: formattedPrice,
+        price: item.price,
+        count: 0,
+        ite_cod: item.ite_cod, 
+        assentos: []
+      };
+    }
+
+    setores[setorKey].ticketTypes[keyTicket].count++;
+    setores[setorKey].ticketTypes[keyTicket].assentos.push(item.assento_visual);
+    total += formattedPrice; // acumula o total
+  });
+
+  // Montar visual
+  for(var setor in setores) {
+    var setorData = setores[setor];
+    var divSetor = document.createElement("div");
+    divSetor.className = "carrinho-setor";
+    divSetor.innerHTML = `<p style="color:${setorData.color}"><strong>${setor}</strong></p>`;
+
+    for(var tipo in setorData.ticketTypes) {
+
+      var ingresso = setorData.ticketTypes[tipo];
+      var textoQtd = ingresso.count > 1 ? ` x${ingresso.count}` : "";
+
+      var sampleItem = Object.values(carrinho).find(function(i) { 
+        return i.label === setor 
+      });
+
+      var categoriaKey = sampleItem ? sampleItem.key : '';
+
+      var taxaInfo = taxaArr.find(function(t) { 
+        return t.lot_grupo_estoque == categoriaKey && t.ite_cod == ingresso.ite_cod 
+      });
+
+      var taxaHTML = "";
+
+      if(taxaInfo && taxaInfo.mostrar === 'S') {
+        taxaHTML = `<small> (+ R$ ${Number(taxaInfo.taxa).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} taxa)</small>`;
+      }
+
+      var assentosListaSemDuplicados = [...new Set(ingresso.assentos)];
+      var span = document.createElement("div");
+
+      span.innerHTML = `
+        <small>Selecionado: ${assentosListaSemDuplicados}</small><br>
+        ${ingresso.ticketType} - ${Number(ingresso.price).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}${textoQtd}<br/> 
+        ${taxaHTML} 
+      `;
+
+      divSetor.appendChild(span);
+    }
+
+    divSetor.innerHTML += `<hr>`;
+    container.appendChild(divSetor);
+  }
+
+  // Mostrar total final
+  var totalFormatado = 'R$ ' + total.toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+  divTotal.innerHTML = `${totalFormatado}`;
+
+  // Atualiza o modal somente aqui, uma vez
+  limpaListaMod();
+}
+
+function limpaListaMod() {
+  var agrupado = {};
+
+  // Agrupa carrinho por ite_cod
+  Object.values(carrinho).forEach(function(item) {
+    if (!item || !item.ite_cod) return;
+
+    if (!agrupado[item.ite_cod]) {
+      agrupado[item.ite_cod] = { qtd: 0, assentos: [] };
+    }
+
+    agrupado[item.ite_cod].qtd++;
+    agrupado[item.ite_cod].assentos.push(item.labelAssento);
+  });
+
+  // Lista completa de códigos válidos
+  var allIteCods = [];
+
+  if (typeof ite_cod_arr !== 'undefined' && Array.isArray(ite_cod_arr) && ite_cod_arr.length) {
+    allIteCods = ite_cod_arr.map(x => String(x.ite_cod));
+  } else {
+    document.querySelectorAll('[id^="qtd-visual-"]').forEach(function(node) {
+      var id = node.id.replace('qtd-visual-', '');
+      if (id) allIteCods.push(id);
+    });
+  }
+
+  // Junta também os do carrinho
+  Object.keys(agrupado).forEach(code => {
+    if (!allIteCods.includes(code)) allIteCods.push(code);
+  });
+
+  var totalCount = 0;
+
+  allIteCods.forEach(function(code) {
+    var disp = document.getElementById(code);
+    var qtdVisual = document.getElementById(`qtd-visual-${code}`);
+    var qtdInput = document.getElementById(`qtd-${code}`);
+    var assentosInput = document.getElementById(`assentos_seats${code}`);
+
+    var grupo = agrupado[code];
+    var qtd = grupo ? grupo.qtd : 0;
+    var assentosLista = grupo ? grupo.assentos : [];
+
+    // Esconde se for zero
+    if (disp) disp.style.display = qtd > 0 ? 'contents' : 'none';
+
+    // Atualiza valores
+    if (qtdInput) qtdInput.value = qtd;
+    if (qtdVisual) qtdVisual.textContent = qtd;
+    if (assentosInput) assentosInput.value = assentosLista.join(', ');
+
+    totalCount += qtd;
+  });
+
+  botaoCompra(false);
+}
+
+function limparTodosAssentos() {
+  chart.deselectCategories(gru_id);
+}
+
+function botaoCompra(val) {
+  var btn = document.getElementById("final-resumo-pe");
+
+  if(val) {
+    btn.disabled = true;
+    btn.classList.add('desativar-btn');
+    btn.innerHTML = 'Selecione um assento';
+
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('desativar-btn');
+    btn.innerHTML = 'Continuar compra';
+  }
+}
+
+
